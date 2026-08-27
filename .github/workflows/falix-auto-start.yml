@@ -207,33 +207,78 @@ jobs:
 
           async function clearInput(page, selector) {
             return page.evaluate(sel => {
-              const el = document.querySelector(sel);
-              if (!el) return false;
+              const el = document.querySelector(sel) || (sel.includes(',') ? document.querySelector(sel.split(',')[0].trim()) : null);
+              // 支持逗号多选择器：取首个匹配
+              let target = null;
+              for (const part of sel.split(',')) {
+                const e = document.querySelector(part.trim());
+                if (e) { target = e; break; }
+              }
+              if (!target) return false;
               const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-              setter.call(el, '');
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
+              setter.call(target, '');
+              target.dispatchEvent(new Event('input', { bubbles: true }));
+              target.dispatchEvent(new Event('change', { bubbles: true }));
               return true;
             }, selector).catch(()=>false);
           }
 
           async function inputByCoord(page, selector, text, label) {
+            // 支持多选择器逗号分隔，取首个可视元素
             const pos = await page.evaluate(sel => {
-              const el = document.querySelector(sel);
-              if (!el) return null;
-              el.scrollIntoView({ block: 'center' });
-              const r = el.getBoundingClientRect();
-              return r.width > 0 ? { x: r.x + r.width/2, y: r.y + r.height/2 } : null;
+              for (const part of sel.split(',')) {
+                const el = document.querySelector(part.trim());
+                if (!el) continue;
+                el.scrollIntoView({ block: 'center' });
+                const r = el.getBoundingClientRect();
+                if (r.width > 0) return { x: r.x + r.width/2, y: r.y + r.height/2, found: part.trim() };
+              }
+              return null;
             }, selector);
             if (!pos) { console.log(label + ': 找不到输入框 ' + selector); return false; }
+            const realSel = pos.found || selector.split(',')[0].trim();
             await cdpClick(page, pos.x, pos.y);
-            await sleep(300);
-            await clearInput(page, selector);
+            await sleep(400);
+            await clearInput(page, realSel);
             await sleep(200);
             await cdpInsertText(page, text);
-            await sleep(300);
-            const ok = await page.evaluate((s, v) => document.querySelector(s)?.value === v, selector, text);
-            console.log(label + ': ' + (ok ? 'OK' : '不完整') + ' len=' + (await page.evaluate(s => document.querySelector(s)?.value?.length || 0, selector)) + ' want=' + text.length);
+            await sleep(400);
+            let ok = await page.evaluate((s, v) => {
+              for (const part of s.split(',')) {
+                const el = document.querySelector(part.trim());
+                if (el && el.value === v) return true;
+              }
+              return false;
+            }, selector, text);
+            // Fallback: 尝试聚焦 + 键盘输入（应对 CDP insertText 失效）
+            if (!ok) {
+              try {
+                await page.focus(realSel);
+                await sleep(200);
+                await page.keyboard.down('Control'); await page.keyboard.press('a'); await page.keyboard.up('Control');
+                await sleep(100);
+                await page.keyboard.press('Backspace');
+                await sleep(100);
+                await page.keyboard.type(text, { delay: 30 });
+                await sleep(300);
+                ok = await page.evaluate((s, v) => {
+                  for (const part of s.split(',')) {
+                    const el = document.querySelector(part.trim());
+                    if (el && el.value === v) return true;
+                  }
+                  return false;
+                }, selector, text);
+                console.log(label + ': keyboard fallback ' + (ok ? 'OK' : 'fail'));
+              } catch (e) { console.log(label + ' keyboard err: ' + e.message); }
+            }
+            const curLen = await page.evaluate(s => {
+              for (const part of s.split(',')) {
+                const el = document.querySelector(part.trim());
+                if (el) return el.value?.length || 0;
+              }
+              return 0;
+            }, selector);
+            console.log(label + ': ' + (ok ? 'OK' : '不完整') + ' len=' + curLen + ' want=' + text.length);
             return ok;
           }
 
@@ -573,8 +618,8 @@ jobs:
             await sleep(2000);
             await shot(page, '01_login');
 
-            await safeType(page, 'input[type="email"]', EMAIL, 'email');
-            await safeType(page, 'input[type="password"]', PASSWORD, 'password');
+            await safeType(page, 'input[name="email-address"], input[type="email"], input[id="email-address"]', EMAIL, 'email');
+            await safeType(page, 'input[name="password"], input[type="password"], input[id="password"]', PASSWORD, 'password');
             await sleep(500);
             await shot(page, '02_creds');
 
