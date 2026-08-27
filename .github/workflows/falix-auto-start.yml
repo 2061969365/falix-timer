@@ -99,7 +99,8 @@ jobs:
 
           const EMAIL     = process.env.FALIX_EMAIL;
           const PASSWORD  = process.env.FALIX_PASSWORD;
-          const SERVER_ID = process.env.FALIX_SERVER_ID || '3402378'; // 默认本仓库验证的 timer id
+          const SERVER_ID = process.env.FALIX_SERVER_ID;
+          if (!SERVER_ID) { console.error('FALIX_SERVER_ID 未设置，请在 Settings→Secrets 配置'); process.exit(1); }
           const TG_TOKEN  = process.env.TG_TOKEN;
           const TG_CHAT_ID= process.env.TG_CHAT_ID;
           const LOGIN_URL = 'https://client.falixnodes.net/auth/login';
