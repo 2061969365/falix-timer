@@ -1,6 +1,6 @@
 # Falix Timer 自动续期
 
-> 针对 https://client.falixnodes.net/timer?id=3402378 的 GitHub Actions 自动化续期脚本  
+> 针对 `https://client.falixnodes.net/timer?id=<SERVER_ID>` 的 GitHub Actions 自动化续期脚本  
 > 已通过浏览器实测：页面显示 `71 小时 xx 分` + `添加时间`按钮，点击需登录后弹出 `Watch Ad` 广告视频，播放完成后提示 `Timer has been extended`。
 
 ## 功能
@@ -26,11 +26,11 @@ Fork 到你自己的 GitHub 账号。
 |---|---|---|---|
 | `FALIX_EMAIL` | ✅ | Falix 登录邮箱 | `you@example.com` |
 | `FALIX_PASSWORD` | ✅ | Falix 密码 | `xxx` |
-| `FALIX_SERVER_ID` | ✅ | 服务器 ID，即 timer 链接的 `id` 参数 | `3402378` |
+| `FALIX_SERVER_ID` | ✅ | 服务器 ID，即 timer 链接的 `id` 参数 | `YOUR_SERVER_ID` |
 | `TG_TOKEN` | 可选 | Telegram Bot Token（用于通知） | `123456:ABC...` |
 | `TG_CHAT_ID` | 可选 | Telegram Chat ID | `123456789` |
 
-> 不填 `FALIX_SERVER_ID` 时默认 `3402378`（本仓库已验证的 ID）。
+> 需在 Secrets 中配置 `FALIX_SERVER_ID`（从 `timer?id=` 链接获取）。
 
 ### 3. 触发运行
 
@@ -67,7 +67,7 @@ npm init -y && npm install puppeteer-real-browser@1.4.4 puppeteer-core@25.7.0
 # 设置环境变量后运行（需本机 Chrome）
 set FALIX_EMAIL=you@example.com
 set FALIX_PASSWORD=xxx
-set FALIX_SERVER_ID=3402378
+set FALIX_SERVER_ID=YOUR_SERVER_ID
 node run.mjs
 ```
 
@@ -82,4 +82,4 @@ node run.mjs
 
 ## 验证记录
 
-- 2026-08-27 浏览器实测：未登录访问 `https://client.falixnodes.net/timer?id=3402378` 显示 `71 小时 50 分 18 秒` + `添加时间`，点击后重定向至 `/auth/login`（需登录态才能续期），已在脚本中实现完整登录→续期闭环。
+- 2026-08-27 浏览器实测：未登录访问 `timer?id=<SERVER_ID>` 显示 `71 小时 xx 分` + `添加时间`，点击后重定向至 `/auth/login`（需登录态才能续期），已在脚本中实现完整登录→续期闭环。
