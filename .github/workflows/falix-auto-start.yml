@@ -1,13 +1,10 @@
 name: Falix Auto Start
 
 on:
-  push:
-    branches: [main]
   schedule:
-    - cron: '*/15 * * * *'
+    # 每天 02:17 UTC 运行一次（71h 计时器足够，无需 15min 高频保活）
+    - cron: '17 2 * * *'
   workflow_dispatch:
-  repository_dispatch:
-    types: [falix-start]
 
 concurrency:
   group: ${{ github.workflow }}
@@ -110,33 +107,9 @@ jobs:
 
           const sleep = ms => new Promise(r => setTimeout(r, ms));
           const START = Date.now();
-          const LIMIT = 20 * 60 * 1000;
-
-          async function triggerNextRun() {
-            const [owner, repo] = (process.env.GITHUB_REPOSITORY || '').split('/');
-            if (!owner || !repo) return;
-            try {
-              const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/dispatches`, {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${process.env.GITHUB_TOKEN}`,
-                  'Accept': 'application/vnd.github+json',
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ event_type: 'falix-start' })
-              });
-              const body = await res.text().catch(()=>'');
-              console.log('已触发下一轮: http=' + res.status + ' ' + body.substring(0,120));
-            } catch(e) { console.log('触发失败: ' + e.message); }
-          }
 
           async function checkTime(label) {
             const elapsed = Date.now() - START;
-            if (elapsed >= LIMIT) {
-              console.log(`${label}: 已达${Math.round(elapsed/1000)}s, 强制触发下一轮`);
-              await triggerNextRun();
-              process.exit(0);
-            }
             console.log(`${label}: ${Math.round(elapsed/1000)}s`);
           }
 
@@ -699,12 +672,10 @@ jobs:
               await tg('⚠️ <b>Falix</b> 计时器续期失败: <code>' + ext + '</code>');
               console.log('timer extend failed: ' + ext);
             }
-            await triggerNextRun();
           } catch(e) {
             console.error('error: ' + e.message);
             await shot(page, 'error').catch(()=>{});
             await tg('❌ <b>Falix</b> 出错: ' + e.message);
-            await triggerNextRun();
             process.exit(1);
           } finally {
             await browser.close().catch(()=>{});

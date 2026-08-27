@@ -9,7 +9,7 @@
 - **服务器保活**：登录后先访问 `/server/<ID>/console`，若状态为 `offline` 则自动点击 `Start` → `Watch Ad` → 播放广告等待 30s，最多 3 轮
 - **真人浏览器**：`puppeteer-real-browser` + `turnstile:true` 自动过 Cloudflare Turnstile，CDP 坐标点击规避 React 受控输入
 - **WARP 加速**：`fscarmen/warp-on-actions` 解决 IMA 广告不加载
-- **自触发续命**：20 分钟强制 `repository_dispatch` 触发下一轮，避免 6 小时 Actions 限制；`schedule: */15 * * * *` 作为兜底
+- **定时调度**：`schedule: 17 2 * * *` 每天 02:17 UTC 运行一次（71h 余量充足，无需高频）
 - **Cookie 缓存**：登录成功后缓存 `cookies.json`，下次复用免登录
 
 ## 快速开始
@@ -34,15 +34,8 @@ Fork 到你自己的 GitHub 账号。
 
 ### 3. 触发运行
 
-- **自动**：每 15 分钟 `schedule` 触发 + 每次运行结束自触发 `falix-start`
+- **自动**：每天 `02:17 UTC` 定时触发（`schedule: 17 2 * * *`）
 - **手动**：`Actions` → `Falix Auto Start` → `Run workflow` → `Run workflow`
-- **API 触发**：
-```bash
-curl -X POST https://api.github.com/repos/<用户名>/<仓库名>/dispatches \
-  -H "Authorization: Bearer <PAT>" \
-  -H "Accept: application/vnd.github+json" \
-  -d '{"event_type":"falix-start"}'
-```
 
 ### 4. 查看结果
 
@@ -52,10 +45,9 @@ curl -X POST https://api.github.com/repos/<用户名>/<仓库名>/dispatches \
 
 ## 工作流说明
 
-- `falix-auto-start.yml:4`：`push / schedule / workflow_dispatch / repository_dispatch` 四种触发
+- `falix-auto-start.yml:4`：`schedule 17 2 * * *` 每天一次 + `workflow_dispatch` 手动触发
 - `falix-auto-start.yml:59`：WARP dual 栈
 - `falix-auto-start.yml:82` / `698`：仅重新登录时保存 cookie，避免无效覆盖
-- `falix-auto-start.yml:112`：20 分钟 `LIMIT` 强制触发下一轮，保持常驻
 - `Keepalive.yml:4`：每 3 天 `17 3 */3 * *` 自动提交 `keep-alive.txt` 防止仓库 60 天休眠
 
 ## 本地调试
