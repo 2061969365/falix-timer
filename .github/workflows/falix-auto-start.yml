@@ -17,10 +17,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '22'
 
@@ -29,7 +29,7 @@ jobs:
 
       - name: Cache Chrome
         id: cache-chrome
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /tmp/chrome-cache
           key: chrome-v1
@@ -70,14 +70,14 @@ jobs:
 
       - name: Cache node_modules
         id: cache-npm
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: node_modules
           key: npm-v2
 
       - name: Restore cookies
         id: restore-cookies
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: cookies.json
           key: falix-cookies-${{ github.run_id }}
@@ -93,6 +93,21 @@ jobs:
           script = r"""
           import { connect } from 'puppeteer-real-browser';
           import fs from 'fs';
+
+          // P0: puppeteer 内部事件栈抛出的 ProtocolError（如新 attach 的广告 iframe
+          // 的 Page.enable/Network.enable 超时）不在业务 try/catch 内，必须进程级兜底，
+          // 否则整个 node 进程直接崩溃 exit 1。
+          let fatalCdp = '';
+          process.on('unhandledRejection', reason => {
+            const msg = (reason && reason.message) ? reason.message : String(reason);
+            console.error('unhandledRejection: ' + msg);
+            if (/ProtocolError|timed out|Target closed|Connection closed|Session closed/i.test(msg)) fatalCdp = msg;
+          });
+          process.on('uncaughtException', err => {
+            const msg = (err && err.message) ? err.message : String(err);
+            console.error('uncaughtException: ' + msg);
+            fatalCdp = msg;
+          });
 
           const EMAIL     = process.env.FALIX_EMAIL;
           const PASSWORD  = process.env.FALIX_PASSWORD;
@@ -511,18 +526,28 @@ jobs:
           }
           async function doStart(page) {
             for (let round = 1; round <= 3; round++) {
+              try {
               console.log('--- round ' + round + '/3 ---');
               const sp = await clickBtn(page, 'start');
               if (!sp) { console.log('no start btn'); break; }
               console.log('click start ok');
 
+              // P1: 广告 modal 可能晚到（IMA 加载慢），等待窗口从 5s 放到 30s；
+              // 同时轮询状态，服务器自行进入 starting/online 即直接成功返回。
               let adClicked = false;
-              for (let w = 0; w < 10; w++) {
+              for (let w = 0; w < 60; w++) {
                 await sleep(500);
-                const ap = await clickBtn(page, 'watch ad');
+                if (w % 4 === 3) {
+                  const early = await getStatus(page).catch(()=>null);
+                  if (early === 'starting' || early === 'online') {
+                    console.log('server already ' + early + ' without ad');
+                    return early;
+                  }
+                }
+                const ap = await clickBtn(page, 'watch ad').catch(()=>null);
                 if (ap) {
                   await sleep(1000);
-                  const ap2 = await clickBtn(page, 'watch ad');
+                  const ap2 = await clickBtn(page, 'watch ad').catch(()=>null);
                   if (ap2) {
                     await shot(page, 'ad_' + round);
                     console.log('click watch ad ok');
@@ -533,41 +558,57 @@ jobs:
               }
               if (!adClicked) console.log('no ad modal');
 
-              await sleep(3000);
-              const playResult = await page.evaluate(() => {
-                const v = document.querySelector('video');
-                if (v) { v.play().catch(()=>{}); return 'video-play'; }
-                const vjs = document.querySelector('.vjs-big-play-button');
-                if (vjs && vjs.offsetWidth > 0) { vjs.click(); return 'vjs-play'; }
-                const btns = [...document.querySelectorAll('button')];
-                const play = btns.find(b => {
-                  const t = (b.textContent || '').trim().toLowerCase();
-                  return t.includes('play video') || t === 'play';
-                });
-                if (play) { play.click(); return 'btn-play'; }
-                return null;
-              }).catch(()=>null);
+              // P1: 无广告时不对背景页空点播放，避免误触页面自带 video
+              let playResult = 'skipped(no ad)';
+              if (adClicked) {
+                await sleep(3000);
+                playResult = await page.evaluate(() => {
+                  const v = document.querySelector('video');
+                  if (v) { v.play().catch(()=>{}); return 'video-play'; }
+                  const vjs = document.querySelector('.vjs-big-play-button');
+                  if (vjs && vjs.offsetWidth > 0) { vjs.click(); return 'vjs-play'; }
+                  const btns = [...document.querySelectorAll('button')];
+                  const play = btns.find(b => {
+                    const t = (b.textContent || '').trim().toLowerCase();
+                    return t.includes('play video') || t === 'play';
+                  });
+                  if (play) { play.click(); return 'btn-play'; }
+                  return null;
+                }).catch(()=>null);
+              }
               console.log('play click: ' + playResult);
 
               console.log('waiting 30s...');
-              for (let s = 5; s <= 30; s += 5) { await sleep(5000); console.log(s + '/30s'); }
+              for (let s = 5; s <= 30; s += 5) {
+                await sleep(5000);
+                console.log(s + '/30s');
+                if (fatalCdp) { console.log('CDP fault during wait: ' + fatalCdp); break; }
+              }
 
-              await page.reload({ waitUntil: 'domcontentloaded' });
+              await page.reload({ waitUntil: 'domcontentloaded' }).catch(()=>{});
               await sleep(2000);
-              const st = await getStatus(page);
+              const st = await getStatus(page).catch(()=> 'unknown');
               console.log('status: ' + st);
               await shot(page, 'round' + round + '_' + st);
               if (st === 'starting' || st === 'online') return st;
               if (round < 3) await sleep(2000);
+              } catch(e) {
+                // P0: 单轮 CDP 异常只记日志，reload 后继续下一轮，不杀死进程
+                console.log('round ' + round + ' err: ' + (e && e.message ? e.message : e));
+                await shot(page, 'round' + round + '_err').catch(()=>{});
+                await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(()=>{});
+                await sleep(3000);
+              }
             }
-            return await getStatus(page);
+            return await getStatus(page).catch(()=> 'unknown');
           }
 
           const { browser, page } = await connect({
             headless: false, turnstile: true, disableXvfb: false,
             args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu','--window-size=1280,800','--autoplay-policy=no-user-gesture-required'],
             customConfig: { chromePath: '/usr/bin/google-chrome-stable' },
-            connectOption: { defaultViewport: { width:1280, height:800 }, protocolTimeout: 120000 },
+            // P0: 120s 内新 attach 的广告 iframe 不响应就会定时引爆，提到 300s
+            connectOption: { defaultViewport: { width:1280, height:800 }, protocolTimeout: 300000 },
           });
           console.log('browser ok');
 
@@ -673,10 +714,14 @@ jobs:
               console.log('timer extend failed: ' + ext);
             }
           } catch(e) {
-            console.error('error: ' + e.message);
+            const msg = (e && e.message) ? e.message : String(e);
+            console.error('error: ' + msg);
             await shot(page, 'error').catch(()=>{});
-            await tg('❌ <b>Falix</b> 出错: ' + e.message);
-            process.exit(1);
+            await tg('❌ <b>Falix</b> 出错: ' + msg);
+            // P0: CDP 层崩溃（新 target 的 enable 超时等）exit 2，交由 Run 步骤重试一次；
+            // 业务失败（登录失败等）仍 exit 1 直接红。
+            const retryable = /ProtocolError|timed out|Target closed|Connection closed|Session closed/i.test(msg);
+            process.exit(retryable ? 2 : 1);
           } finally {
             await browser.close().catch(()=>{});
           }
@@ -699,19 +744,36 @@ jobs:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           COOKIES_PATH: ${{ github.workspace }}/cookies.json
-        run: node run.mjs
+        # P0: CDP 故障是偶发 iframe 卡死（exit 2），重试一次；业务失败（exit 1）直接红
+        run: |
+          attempt=1
+          while true; do
+            code=0
+            node run.mjs || code=$?
+            if [ "$code" -eq 0 ]; then
+              break
+            fi
+            if [ "$code" -eq 2 ] && [ "$attempt" -lt 2 ]; then
+              attempt=$((attempt + 1))
+              echo "CDP 故障（exit 2），5s 后第 ${attempt}/2 次重试..."
+              sleep 5
+              continue
+            fi
+            exit "$code"
+          done
 
       - name: Upload screenshots
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: screenshots
           path: /tmp/ss/
           retention-days: 3
 
       - name: Save cookies
-        if: always() && hashFiles('fresh-login.flag') != ''
-        uses: actions/cache/save@v4
+        # P2: cookie 复用且登录态有效也要保存（原来只认 fresh-login.flag，复用路径永远跳过）
+        if: always() && hashFiles('cookies.json') != ''
+        uses: actions/cache/save@v5
         with:
           path: cookies.json
           key: falix-cookies-${{ github.run_id }}
