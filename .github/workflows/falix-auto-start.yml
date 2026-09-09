@@ -338,19 +338,49 @@ jobs:
             });
           }
 
+          // P1: 计时器读数是续期判定的地面真值。旧实现整页取首个 H:MM:SS（会误命中
+          // 控制台日志时间戳），裸字母单位会误杀内存 MB、毫秒 ms，h/m/s 三分支还把
+          // 全页不同位置的数字拼成一个时间——timeBefore 读出 57600s 这类整数即源于此。
+          // 新实现：只在计时器关键词附近的叶子元素内解析，单位严格校验，并记录命中来源。
           async function getRemainingTime(page) {
-            return page.evaluate(() => {
-              const t = document.body.innerText;
-              let h=0, m=0, s=0;
-              const hms = t.match(/(\d+):(\d{2}):(\d{2})/);
-              if (hms) return +hms[1]*3600 + +hms[2]*60 + +hms[3];
-              const he = t.match(/(\d+)\s*(?:h|hours?|小时|时)/i);
-              const me = t.match(/(\d+)\s*(?:m|minutes?|分钟|分)/i);
-              const se = t.match(/(\d+)\s*(?:s|seconds?|秒)/i);
-              if (he) h=+he[1]; if (me) m=+me[1]; if (se) s=+se[1];
-              if (h||m||s) return h*3600 + m*60 + s;
-              return -1;
-            }).catch(()=>-1);
+            const r = await page.evaluate(() => {
+              const norm = s => ((s || '').replace(/\u00a0/g, ' ')).trim();
+              function parseTimerText(t) {
+                t = norm(t);
+                if (!t) return -1;
+                const hms = t.match(/(\d{1,4}):([0-5]\d):([0-5]\d)/);
+                if (hms) return (+hms[1]) * 3600 + (+hms[2]) * 60 + (+hms[3]);
+                let h = 0, m = 0, s = 0, hit = false, mm;
+                if ((mm = t.match(/(\d{1,4})\s*(?:hours?|hrs?|h|小时|时)(?![a-zA-Z])/i))) { h = +mm[1]; hit = true; }
+                // 分钟 m / 秒 s 后面不能跟字母——排除 10ms（毫秒）、512MB（兆字节）
+                if ((mm = t.match(/(\d{1,4})\s*(?:minutes?|mins?|分钟|分)(?![a-zA-Z])/i)) ||
+                    (mm = t.match(/(\d{1,4})\s*m(?![a-zA-Z])/))) { m = +mm[1]; hit = true; }
+                if ((mm = t.match(/(\d{1,4})\s*(?:seconds?|secs?|秒)(?![a-zA-Z])/i)) ||
+                    (mm = t.match(/(\d{1,4})\s*s(?![a-zA-Z])/))) { s = +mm[1]; hit = true; }
+                if (hit) return h * 3600 + m * 60 + s;
+                return -1;
+              }
+              const KW = ['remain', 'left', 'expire', 'countdown', 'timer', '剩余', '倒计时', '续期', '到期'];
+              const els = document.querySelectorAll('body *');
+              for (const el of els) {
+                if (el.children.length > 0) continue;
+                const t = norm(el.innerText || el.textContent);
+                if (!t || t.length > 80) continue;
+                const low = t.toLowerCase();
+                if (!KW.some(k => low.includes(k))) continue;
+                const v = parseTimerText(t);
+                if (v >= 0) return { v, how: 'keyword', sample: t };
+              }
+              const body = norm(document.body.innerText);
+              const all = body.match(/\d{1,4}:[0-5]\d:[0-5]\d/g) || [];
+              if (all.length > 0) {
+                const p = all[0].split(':');
+                return { v: (+p[0]) * 3600 + (+p[1]) * 60 + (+p[2]), how: 'fallback-first-hms', sample: all[0] };
+              }
+              return { v: -1, how: 'none', sample: body.substring(0, 80) };
+            }).catch(() => ({ v: -1, how: 'evaluate-err', sample: '' }));
+            console.log('parse time: v=' + r.v + ' via=' + r.how + ' sample=' + (r.sample || '').substring(0, 60));
+            return r.v;
           }
 
           async function tryAdRound(page, label) {
@@ -682,35 +712,38 @@ jobs:
               }
             }
 
+            // P1: timeBefore 必须在 timer 页读（原来在 console 页读，两边不可比）
+            await page.goto(TIMER_URL, { waitUntil:'domcontentloaded', timeout:30000 }).catch(()=>{});
+            await sleep(3000);
             const timeBefore = await getRemainingTime(page);
             console.log('time before extend: ' + timeBefore + 's');
 
             const ext = await doExtend(page, browser);
             await checkTime('extend');
 
-            if (ext === 'ok') {
-              await page.goto(TIMER_URL, { timeout:15000 }).catch(()=>{});
-              await sleep(3000);
-              const timeAfter = await getRemainingTime(page);
-              console.log('time after extend: ' + timeAfter + 's');
-              // 通用校验：71小时大计时器也能正确判定；原 3500-3700 仅适用于 1h 计时器
-              if (timeAfter > timeBefore && timeBefore > 0 && timeAfter > 0) {
-                const gain = timeAfter - timeBefore;
-                const fmt = s => Math.floor(s/3600) + 'h' + Math.floor(s%3600/60) + 'm';
-                await tg('✅ <b>Falix</b> 计时器已续期: ' + fmt(timeBefore) + '(' + timeBefore + 's) → ' + fmt(timeAfter) + '(' + timeAfter + 's) +' + gain + 's');
-                console.log('timer extend success (verified gain=' + gain + ')');
-              } else if (timeAfter > 0 && timeBefore === -1) {
-                await tg('✅ <b>Falix</b> 计时器已续期: ' + timeAfter + 's (约' + Math.floor(timeAfter/3600) + 'h)');
-                console.log('timer extend success (timeBefore unknown)');
-              } else if (timeAfter === timeBefore && timeAfter > 0) {
-                await tg('⚠️ <b>Falix</b> 续期返回 ok 但时间未增加: ' + timeBefore + 's → ' + timeAfter + 's');
-                console.log('timer extend ok but time unchanged');
-              } else {
-                await tg('✅ <b>Falix</b> 计时器已续期（已检测到 extended 文案，时间校验: ' + timeBefore + '→' + timeAfter + '）');
-                console.log('timer extend success (unverified)');
-              }
+            // P1: 地面真值判定——无论 doExtend 返回 ok 还是 unconfirmed/no_btn，
+            // 只要计时器读数确实增加就判成功，根治“续期成功却报 failed: unconfirmed”
+            await page.goto(TIMER_URL, { timeout:15000 }).catch(()=>{});
+            await sleep(3000);
+            const timeAfter = await getRemainingTime(page);
+            console.log('time after extend: ' + timeAfter + 's (ext=' + ext + ')');
+            // 通用校验：71小时大计时器也能正确判定；原 3500-3700 仅适用于 1h 计时器
+            if (timeAfter > timeBefore && timeBefore > 0 && timeAfter > 0) {
+              const gain = timeAfter - timeBefore;
+              const fmt = s => Math.floor(s/3600) + 'h' + Math.floor(s%3600/60) + 'm';
+              await tg('✅ <b>Falix</b> 计时器已续期: ' + fmt(timeBefore) + '(' + timeBefore + 's) → ' + fmt(timeAfter) + '(' + timeAfter + 's) +' + gain + 's');
+              console.log('timer extend success (verified gain=' + gain + ')');
+            } else if (timeAfter > 0 && timeBefore === -1) {
+              await tg('✅ <b>Falix</b> 计时器已续期: ' + timeAfter + 's (约' + Math.floor(timeAfter/3600) + 'h)');
+              console.log('timer extend success (timeBefore unknown)');
+            } else if (ext === 'ok') {
+              await tg('✅ <b>Falix</b> 计时器已续期（已检测到 extended 文案，时间校验: ' + timeBefore + '→' + timeAfter + '）');
+              console.log('timer extend success (unverified)');
+            } else if (timeAfter === timeBefore && timeAfter > 0) {
+              await tg('⚠️ <b>Falix</b> 计时器时间未增加: ' + timeBefore + 's → ' + timeAfter + 's (ext=' + ext + ')');
+              console.log('timer extend failed (time unchanged, ext=' + ext + ')');
             } else {
-              await tg('⚠️ <b>Falix</b> 计时器续期失败: <code>' + ext + '</code>');
+              await tg('⚠️ <b>Falix</b> 计时器续期失败: <code>' + ext + '</code>（' + timeBefore + '→' + timeAfter + '）');
               console.log('timer extend failed: ' + ext);
             }
           } catch(e) {
