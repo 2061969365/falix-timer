@@ -368,8 +368,18 @@ jobs:
                 if (!t || t.length > 80) continue;
                 const low = t.toLowerCase();
                 if (!KW.some(k => low.includes(k))) continue;
-                const v = parseTimerText(t);
-                if (v >= 0) return { v, how: 'keyword', sample: t };
+                // 关键词命中：先解析自身；数字与标签分属不同元素时（如 SERVER TIMER
+                // 标签与 167 hours 45 minutes 33 seconds 分开），逐级向上取父容器解析
+                let node = el;
+                for (let lvl = 0; lvl <= 2; lvl++) {
+                  const pt = norm(node.innerText || node.textContent);
+                  if (pt && pt.length <= 300) {
+                    const v = parseTimerText(pt);
+                    if (v >= 0) return { v, how: 'keyword-lvl' + lvl, sample: pt.substring(0, 80) };
+                  }
+                  if (!node.parentElement) break;
+                  node = node.parentElement;
+                }
               }
               const body = norm(document.body.innerText);
               const all = body.match(/\d{1,4}:[0-5]\d:[0-5]\d/g) || [];
