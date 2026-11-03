@@ -1,16 +1,17 @@
 # Falix Timer 自动续期
 
 > 针对 `https://client.falixnodes.net/timer?id=<SERVER_ID>` 的 GitHub Actions 自动化续期脚本  
-> 已通过浏览器实测：页面显示 `71 小时 xx 分` + `添加时间`按钮，点击需登录后弹出 `Watch Ad` 广告视频，播放完成后提示 `Timer has been extended`。
+> 2026-11 新版：登录页是 Next.js 受控表单（脚本会等 React hydration 完成后用原生 setter 填表）；计时器页显示 `167 小时 xx 分 xx 秒`，点击「添加时间」直接调用 `/timer/extend`，返回 `Timer has been extended.`，不再播放广告。
 
 ## 功能
 
-- **计时器续期**：自动打开 `https://client.falixnodes.net/timer?id=<SERVER_ID>` → 处理 Turnstile → 点击 `Add Time/添加时间` → 点击 `Watch Ad/观看广告` → 自动播放 `video` / `vjs-big-play-button` → 等待 90s 直到 `Timer has been extended/计时器已`，重试 3 轮
-- **服务器保活**：登录后先访问 `/server/<ID>/console`，若状态为 `offline` 则自动点击 `Start` → `Watch Ad` → 播放广告等待 30s，最多 3 轮
-- **真人浏览器**：`puppeteer-real-browser` + `turnstile:true` 自动过 Cloudflare Turnstile，CDP 坐标点击规避 React 受控输入
-- **WARP 加速**：`fscarmen/warp-on-actions` 解决 IMA 广告不加载
-- **定时调度**：`schedule: 17 2 * * *` 每天 02:17 UTC 运行一次（71h 余量充足，无需高频）
+- **计时器续期**：打开 timer 页 → 处理 Turnstile → 点击 `Add Time/添加时间` → 调用 `/timer/extend` → 回到 timer 页读取新读数，读数增加即成功；单次最多补 3 次，计时器达到 168h 上限时自动停止
+- **服务器保活**：登录后访问 `/server/<ID>/console`，离线时点击 `Start/启动`，轮询状态直到 `starting/online`，最多 3 轮
+- **真人浏览器**：`puppeteer-real-browser` + `turnstile:true` 自动处理 Cloudflare Turnstile；登录表单在 hydration 后直接写值，避免被 React 覆盖或焦点被 solver 抢走
+- **WARP 加速**：`fscarmen/warp-on-actions` 解决广告/IMA 加载问题
+- **定时调度**：`schedule: 17 2 * * *` 每天 02:17 UTC 运行一次
 - **Cookie 缓存**：登录成功后缓存 `cookies.json`，下次复用免登录
+- **权限最小化**：job 显式声明 `contents: read` + `actions: write`，旧 run 清理不会再 403
 
 ## 快速开始
 
@@ -39,16 +40,18 @@ Fork 到你自己的 GitHub 账号。
 
 ### 4. 查看结果
 
-- `Actions` 日志查看 `time before extend / time after extend` 和 `timer extended ok`
+- `Actions` 日志查看 `parse time` / `timer before/after` / `timer extend success` / `status`
+- 续期 API 会打印 `POST .../timer/extend` 与 `{"success":true,"message":"Timer has been extended."}`
 - `Artifacts` 下载 `screenshots`（保留 3 天）排查失败界面
-- Telegram 接收 `✅ 计时器已续期: 259xxx s → 262xxx s (+3600s)` 通知
+- Telegram 接收续期/状态通知
 
 ## 工作流说明
 
-- `falix-auto-start.yml:4`：`schedule 17 2 * * *` 每天一次 + `workflow_dispatch` 手动触发
-- `falix-auto-start.yml:59`：WARP dual 栈
-- `falix-auto-start.yml:82` / `698`：仅重新登录时保存 cookie，避免无效覆盖
-- `Keepalive.yml:4`：每 3 天 `17 3 */3 * *` 自动提交 `keep-alive.txt` 防止仓库 60 天休眠
+- 每天一次 `schedule` + `workflow_dispatch` 手动触发
+- WARP dual 栈 + DNS 1.1.1.1，保证广告与 Cloudflare 正常加载
+- 登录表单：等待 `__reactProps$`（React hydration）后用原生 setter + `input/change` 事件填值，再回读校验
+- 计时器解析：兼容 `167 小时 46 分钟 9 秒`、`167:46:09`、`167 hours 46 minutes 9 seconds`
+- `Keepalive.yml`：每 3 天自动提交 `keep-alive.txt` 防止仓库 60 天休眠
 
 ## 本地调试
 
@@ -67,11 +70,13 @@ node run.mjs
 
 ## 常见问题
 
-- **登录失败**：检查邮箱/密码、Turnstile 是否超时（日志 `login turnstile unconfirmed`），WARP 是否生效
+- **登录失败**：检查日志是否出现 `React ready` 与 `email/password OK (js)`；若为 `login failed: ...`，检查 Secrets、Turnstile 是否超时、WARP 是否生效
+- **账号启用 2FA**：脚本会输出 `login requires 2FA` 并退出，需要关闭 2FA 或改用 cookie 方案
 - **no extend button**：计时器可能已满或页面未加载，查看截图 `timer_01_loaded.png`
-- **video never got a src**：IMA 广告未加载，确认 WARP 步骤 `warp=on`，DNS 已切 `1.1.1.1`
-- **计时器时间未增加**：已改用通用校验 `timeAfter > timeBefore`，71 小时大计时器也会正确判定为成功
+- **计时器时间未增加**：168h 封顶时属正常；日志会打印 `timer near cap`，此时 `timer/extend` 仍然返回成功
+- **登录后 cookie 很快失效**：站点会话较短，脚本每次会重新登录；`cookies.json` 仅作加速
 
 ## 验证记录
 
-- 2026-08-27 浏览器实测：未登录访问 `timer?id=<SERVER_ID>` 显示 `71 小时 xx 分` + `添加时间`，点击后重定向至 `/auth/login`（需登录态才能续期），已在脚本中实现完整登录→续期闭环。
+- 2026-11-03：定位到登录失败根因——旧脚本在 hydration 前输入，且 `turnstile:true` 的 solver 每秒点击验证码区域抢走焦点。改为 hydration 后原生 setter 填表；run 41672488560 / 41676789538 通过（`email/password OK (js)`、`login ok`、`status: online`）
+- 2026-11-03：新版计时器格式与加时流程。run 41677473480 日志显示 `POST .../timer/extend` → `Timer has been extended.`，读数 `604567s → 604791s`（168h 封顶），判定成功

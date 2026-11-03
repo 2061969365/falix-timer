@@ -283,6 +283,20 @@ jobs:
             }, label);
           }
 
+          async function clickBtnLike(page, re) {
+            return page.evaluate(src => {
+              const rx = new RegExp(src, 'i');
+              const b = [...document.querySelectorAll('button,[role="button"]')].find(el => {
+                const t = (el.textContent || '').trim().toLowerCase();
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && !el.disabled && rx.test(t);
+              });
+              if (!b) return false;
+              b.click();
+              return true;
+            }, re.source).catch(()=>false);
+          }
+
           async function waitForReactInput(page, selector, timeoutMs) {
             timeoutMs = timeoutMs || 20000;
             const end = Date.now() + timeoutMs;
@@ -393,9 +407,9 @@ jobs:
                 let n;
                 while ((n = it.nextNode())) {
                   const t = n.textContent.trim().toLowerCase();
-                  if (t==='offline') return 'offline';
-                  if (t==='starting') return 'starting';
-                  if (t==='online'||t==='running') return 'online';
+                  if (t==='offline'||t==='离线'||t==='已停止') return 'offline';
+                  if (t==='starting'||t==='启动中'||t==='正在启动') return 'starting';
+                  if (t==='online'||t==='running'||t==='在线'||t==='运行中') return 'online';
                 }
                 return null;
               }
@@ -663,7 +677,7 @@ jobs:
             for (let round = 1; round <= 3; round++) {
               try {
               console.log('--- round ' + round + '/3 ---');
-              const sp = await clickBtn(page, 'start');
+              const sp = await clickBtn(page, 'start') || await clickBtn(page, '启动');
               if (!sp) { console.log('no start btn'); break; }
               console.log('click start ok');
 
@@ -679,10 +693,10 @@ jobs:
                     return early;
                   }
                 }
-                const ap = await clickBtn(page, 'watch ad').catch(()=>null);
+                const ap = await clickBtnLike(page, /watch ad|观看广告|看广告/i).catch(()=>false);
                 if (ap) {
                   await sleep(1000);
-                  const ap2 = await clickBtn(page, 'watch ad').catch(()=>null);
+                  const ap2 = await clickBtnLike(page, /watch ad|观看广告|看广告/i).catch(()=>false);
                   if (ap2) {
                     await shot(page, 'ad_' + round);
                     console.log('click watch ad ok');
@@ -691,11 +705,12 @@ jobs:
                   break;
                 }
               }
-              if (!adClicked) console.log('no ad modal');
+              const hasMedia = await page.evaluate(() => !!(document.querySelector('video') || document.querySelector('.vjs-big-play-button'))).catch(()=>false);
+              if (!adClicked && !hasMedia) console.log('no ad modal');
 
               // P1: 无广告时不对背景页空点播放，避免误触页面自带 video
               let playResult = 'skipped(no ad)';
-              if (adClicked) {
+              if (adClicked || hasMedia) {
                 await sleep(3000);
                 playResult = await page.evaluate(() => {
                   const v = document.querySelector('video');
@@ -705,7 +720,7 @@ jobs:
                   const btns = [...document.querySelectorAll('button')];
                   const play = btns.find(b => {
                     const t = (b.textContent || '').trim().toLowerCase();
-                    return t.includes('play video') || t === 'play';
+                    return t.includes('play video') || t === 'play' || t.includes('播放');
                   });
                   if (play) { play.click(); return 'btn-play'; }
                   return null;
