@@ -14,6 +14,9 @@ jobs:
   start-server:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write
 
     steps:
       - name: Checkout
@@ -280,16 +283,80 @@ jobs:
             }, label);
           }
 
+          async function waitForReactInput(page, selector, timeoutMs) {
+            timeoutMs = timeoutMs || 20000;
+            const end = Date.now() + timeoutMs;
+            while (Date.now() < end) {
+              const ready = await page.evaluate(sel => {
+                for (const part of sel.split(',')) {
+                  const el = document.querySelector(part.trim());
+                  if (el && Object.keys(el).some(k => k.indexOf('__reactProps$') === 0)) return true;
+                }
+                return false;
+              }, selector).catch(()=>false);
+              if (ready) return true;
+              await sleep(250);
+            }
+            return false;
+          }
+
+          async function readInputValue(page, selector) {
+            return page.evaluate(sel => {
+              for (const part of sel.split(',')) {
+                const el = document.querySelector(part.trim());
+                if (el) return el.value || '';
+              }
+              return '';
+            }, selector).catch(()=>'');
+          }
+
+          async function jsFillInput(page, selector, text) {
+            return page.evaluate((sel, v) => {
+              let el = null;
+              for (const part of sel.split(',')) {
+                const e = document.querySelector(part.trim());
+                if (e && e.getBoundingClientRect().width > 0) { el = e; break; }
+              }
+              if (!el) {
+                for (const part of sel.split(',')) {
+                  const e = document.querySelector(part.trim());
+                  if (e) { el = e; break; }
+                }
+              }
+              if (!el) return 'not-found';
+              const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+              if (!desc || !desc.set) return 'no-setter';
+              const tracker = el._valueTracker;
+              if (tracker) tracker.setValue('');
+              desc.set.call(el, v);
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              return el.value === v ? 'ok' : 'mismatch';
+            }, selector, text).catch(e => 'err:' + e.message);
+          }
+
           async function safeType(page, selector, text, label) {
-            if (!text) { console.log(label + ': 值为空，跳过'); return; }
-            // 主方法：CDP 坐标点击 + 键盘输入（React 页面必须用这种方式）
+            if (!text) { console.log(label + ': 值为空，跳过'); return false; }
+            // P0: 新登录页是 Next.js 受控表单。必须在 hydration 完成后用原生 setter
+            // 直接写值并派发 input 事件：在 hydration 期间打字会被 React 覆盖，
+            // 而 turnstile solver 每秒的点击会偷走焦点，键盘输入只落得下 1 个字符。
+            const ready = await waitForReactInput(page, selector, 20000);
+            console.log(label + ': React ' + (ready ? 'ready' : '超时未就绪，仍尝试填写'));
             for (let attempt = 1; attempt <= 3; attempt++) {
+              const how = await jsFillInput(page, selector, text);
+              await sleep(500);
+              const cur = await readInputValue(page, selector);
+              if (how === 'ok' && cur === text) {
+                console.log(label + ': OK (js) len=' + cur.length);
+                return true;
+              }
+              console.log(label + ': js 填写失败(' + how + ') len=' + cur.length + '，尝试键盘，attempt ' + attempt);
               const ok = await inputByCoord(page, selector, text, label);
               if (ok) return true;
-              console.log(label + ': attempt ' + attempt + ' 失败，重试');
               await sleep(500);
             }
             console.log(label + ': 3次尝试均失败');
+            return false;
           }
 
           async function hasTurnstileToken(page) {
@@ -670,13 +737,15 @@ jobs:
 
             if (!loggedIn) {
             await page.goto(LOGIN_URL, { waitUntil:'domcontentloaded', timeout:30000 });
-            await sleep(2000);
+            await page.waitForSelector('input[name="email"], input[type="email"]', { timeout:30000 }).catch(()=>{});
+            await sleep(1000);
             await shot(page, '01_login');
 
-            await safeType(page, 'input[name="email-address"], input[type="email"], input[id="email-address"]', EMAIL, 'email');
-            await safeType(page, 'input[name="password"], input[type="password"], input[id="password"]', PASSWORD, 'password');
+            const emailOk = await safeType(page, 'input[name="email"], input#email, input[name="email-address"], input[type="email"], input[id="email-address"]', EMAIL, 'email');
+            const passOk = await safeType(page, 'input[name="password"], input#password, input[type="password"], input[id="password"]', PASSWORD, 'password');
             await sleep(500);
             await shot(page, '02_creds');
+            if (!emailOk || !passOk) throw new Error('登录表单填写失败: email=' + emailOk + ' password=' + passOk);
 
             const tOk = await solveTurnstile(page, 15000);
             console.log(tOk ? 'login turnstile ok' : 'login turnstile unconfirmed');
@@ -688,8 +757,14 @@ jobs:
             try { await page.waitForNavigation({ timeout:20000, waitUntil:'domcontentloaded' }); } catch { await sleep(5000); }
             await shot(page, '04_after_login');
 
+            if (page.url().includes('/auth/2fa')) {
+              console.log('login requires 2FA: ' + page.url());
+              await tg('❌ <b>Falix</b> 登录需要 2FA，脚本无法自动完成');
+              throw new Error('账号启用了 2FA（' + page.url() + '），请关闭 2FA 或改用 cookie');
+            }
+
             if (page.url().includes('/auth/login')) {
-              const err = await page.evaluate(()=>[...document.querySelectorAll('.alert,.error,[role="alert"]')].map(e=>e.textContent?.trim()).join('|')).catch(()=>'');
+              const err = await page.evaluate(()=>[...document.querySelectorAll('.invalid-feedback,.alert,.error,[role="alert"]')].map(e=>e.textContent?.trim()).filter(Boolean).join('|')).catch(()=>'');
               console.log('login failed: ' + err);
               await tg('❌ <b>Falix</b> 登录失败: ' + err);
               process.exit(1);
@@ -828,7 +903,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           current="${{ github.run_id }}"
-          ids=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=100" \
+          ids=$(gh api "repos/${{ github.repository }}/actions/workflows/falix-auto-start.yml/runs?per_page=100" \
             --jq '.workflow_runs[] | select(.status == "completed") | .id' | grep -v "^${current}$")
           keep=$(echo "$ids" | sort -nr | head -n 3)
           for id in $ids; do
