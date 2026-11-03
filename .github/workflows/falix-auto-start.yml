@@ -586,6 +586,7 @@ jobs:
             console.log('=== TIMER EXTEND ===');
             const CAP = 168 * 3600;
             let lastKnown = -1;
+            let totalGain = 0;
 
             for (let attempt = 1; attempt <= 3; attempt++) {
               await page.goto(TIMER_URL, { waitUntil:'domcontentloaded', timeout:30000 }).catch(()=>{});
@@ -636,17 +637,22 @@ jobs:
               await shot(page, 'timer_after_' + attempt).catch(()=>{});
 
               if (before >= 0 && after > before) {
-                console.log('timer extend success (gain=' + (after - before) + 's)');
-                return 'ok';
+                totalGain += after - before;
+                console.log('timer extend success (gain=' + (after - before) + 's, total=' + totalGain + 's)');
               }
               if (after >= CAP - 3600) {
                 console.log('timer near cap (~' + Math.floor(after/3600) + 'h), stop');
-                return 'capped';
+                return totalGain > 0 ? 'ok' : 'capped';
               }
               if (after >= 0) lastKnown = after;
+              if (after <= before && totalGain > 0) {
+                console.log('timer not increased on attempt ' + attempt + ', stop (limit/cooldown)');
+                break;
+              }
               console.log('timer not increased on attempt ' + attempt + ', retrying...');
             }
 
+            if (totalGain > 0) return 'ok';
             await dumpUi(page, 'extend_unconfirmed');
             console.log('extend unconfirmed (lastKnown=' + lastKnown + 's)');
             return 'unconfirmed';
