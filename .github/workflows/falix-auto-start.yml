@@ -479,6 +479,8 @@ jobs:
                 t: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 50),
                 href: el.getAttribute('href') || '',
                 cls: String(el.className || '').slice(0, 40),
+                aria: el.getAttribute('aria-label') || '',
+                title: el.getAttribute('title') || '',
                 dis: !!el.disabled
               })).filter(x => x.t || x.href);
               const dlg = [...document.querySelectorAll('[role="dialog"],[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"]')].filter(vis).map(el => (el.innerText || '').replace(/\s+/g, ' ').slice(0, 300));
@@ -826,6 +828,7 @@ jobs:
             await page.goto(SERVER_URL, { waitUntil:'domcontentloaded', timeout:30000 });
             await sleep(3000);
             await shot(page, '05_console');
+            await dumpUi(page, 'console');
 
             const st = await getStatus(page);
             console.log('status: ' + st);
