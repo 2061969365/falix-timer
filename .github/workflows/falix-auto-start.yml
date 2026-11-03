@@ -460,6 +460,24 @@ jobs:
             return r.v;
           }
 
+          async function dumpUi(page, tag) {
+            const info = await page.evaluate(() => {
+              const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+              const btns = [...document.querySelectorAll('button,[role="button"],a')].filter(vis).map(el => ({
+                t: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 50),
+                href: el.getAttribute('href') || '',
+                cls: String(el.className || '').slice(0, 40),
+                dis: !!el.disabled
+              })).filter(x => x.t || x.href);
+              const dlg = [...document.querySelectorAll('[role="dialog"],[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"]')].filter(vis).map(el => (el.innerText || '').replace(/\s+/g, ' ').slice(0, 300));
+              const ifr = [...document.querySelectorAll('iframe')].map(f => (f.src || '').slice(0, 100));
+              const text = (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 1500);
+              const nums = [...document.querySelectorAll('body *')].filter(el => !el.children.length).map(el => (el.textContent || '').trim()).filter(t => t && t.length < 40 && /[0-9]/.test(t) && /(小时|时|分|秒|hour|min|sec|day|天)/i.test(t));
+              return { url: location.href, btns: btns.slice(0, 60), dlg, ifr, nums: [...new Set(nums)].slice(0, 30), text };
+            }).catch(e => ({ err: e.message }));
+            console.log('UI[' + tag + '] ' + JSON.stringify(info));
+          }
+
           async function tryAdRound(page, label) {
             const wp = await clickBtn(page, 'watch ad') || await clickBtn(page, '观看广告');
             if (!wp) {
@@ -563,6 +581,7 @@ jobs:
             }).catch(()=>{});
             await sleep(2000);
             await shot(page, 'timer_01_loaded').catch(()=>{});
+            await dumpUi(page, 'timer_loaded');
 
             const tOk = await solveTurnstile(page, 25000);
             console.log(tOk ? 'timer turnstile ok' : 'timer turnstile unconfirmed');
@@ -576,7 +595,10 @@ jobs:
               return 'no_btn';
             }
             console.log('click add time ok');
-            await sleep(3000);
+            for (const d of [1000, 2000, 3000]) {
+              await sleep(d);
+              await dumpUi(page, 'after_add_' + d);
+            }
             await shot(page, 'timer_03_addtime').catch(()=>{});
 
             const r1 = await tryAdRound(page, 'ad1');
