@@ -10,7 +10,8 @@
 - **真人浏览器**：`puppeteer-real-browser` + `turnstile:true` 自动处理 Cloudflare Turnstile；登录表单在 hydration 后直接写值，避免被 React 覆盖或焦点被 solver 抢走
 - **WARP 加速**：`fscarmen/warp-on-actions` 解决广告/IMA 加载问题
 - **定时调度**：`schedule: 17 2 * * *` 每天 02:17 UTC 运行一次
-- **Cookie 缓存**：登录成功后缓存 `cookies.json`，下次复用免登录
+- **Cookie 缓存**：按账号缓存到 `cookies.json`（key 为 serverId），下次复用免登录；切账号前清 cookie/localStorage/IndexedDB，避免串号
+- **多账号**：`FALIX_ACCOUNTS` JSON 数组按顺序处理，单个账号失败不影响其他账号；全部结束后有失败则 exit 1
 - **权限最小化**：job 显式声明 `contents: read` + `actions: write`，旧 run 清理不会再 403
 
 ## 快速开始
@@ -25,13 +26,31 @@ Fork 到你自己的 GitHub 账号。
 
 | Secret | 必填 | 说明 | 示例 |
 |---|---|---|---|
-| `FALIX_EMAIL` | ✅ | Falix 登录邮箱 | `you@example.com` |
-| `FALIX_PASSWORD` | ✅ | Falix 密码 | `xxx` |
-| `FALIX_SERVER_ID` | ✅ | 服务器 ID，即 timer 链接的 `id` 参数 | `YOUR_SERVER_ID` |
+| `FALIX_EMAIL` | 单账号 | Falix 登录邮箱 | `you@example.com` |
+| `FALIX_PASSWORD` | 单账号 | Falix 密码 | `xxx` |
+| `FALIX_SERVER_ID` | 单账号 | 服务器 ID，即 timer 链接的 `id` 参数 | `YOUR_SERVER_ID` |
+| `FALIX_ACCOUNTS` | 多账号 | JSON 数组，配置后优先于上面三个 | 见下方 |
 | `TG_TOKEN` | 可选 | Telegram Bot Token（用于通知） | `123456:ABC...` |
 | `TG_CHAT_ID` | 可选 | Telegram Chat ID | `123456789` |
 
-> 需在 Secrets 中配置 `FALIX_SERVER_ID`（从 `timer?id=` 链接获取）。
+> 单账号只配 `FALIX_EMAIL` / `FALIX_PASSWORD` / `FALIX_SERVER_ID` 即可；多账号改用 `FALIX_ACCOUNTS`，单账号 secrets 可留作 fallback。
+
+#### 多账号
+
+`FALIX_ACCOUNTS` 的值为 JSON 数组：
+
+```json
+[
+  {"email":"a@example.com","password":"pass1","serverId":"srv1","label":"主号"},
+  {"email":"b@example.com","password":"pass2","serverId":"srv2","label":"小号"}
+]
+```
+
+- 配置后优先使用；未配置或解析失败时回退到 `FALIX_EMAIL` / `FALIX_PASSWORD` / `FALIX_SERVER_ID`
+- 账号按数组顺序串行处理，共用同一个浏览器；每个账号独立 cookie（key = `serverId`），切换前清 cookie/localStorage/IndexedDB
+- 某个账号失败只记录并继续下一个；全部结束后有失败则 job 失败（exit 1），日志和 TG 会带 `[序号/总数] label`
+- `label` 只用于日志/通知，不要填邮箱等敏感信息；Telegram 里的 `<>&` 会被去掉
+- 账号多时把 `timeout-minutes` 调大（默认 60 分钟，约每账号 1.5–2 分钟）
 
 ### 3. 触发运行
 
@@ -48,6 +67,7 @@ Fork 到你自己的 GitHub 账号。
 ## 工作流说明
 
 - 每天一次 `schedule` + `workflow_dispatch` 手动触发
+- 多账号：读取 `FALIX_ACCOUNTS` 后串行执行；每个账号独立 cookie，失败隔离，最后汇总 exit code
 - WARP dual 栈 + DNS 1.1.1.1，保证广告与 Cloudflare 正常加载
 - 登录表单：等待 `__reactProps$`（React hydration）后用原生 setter + `input/change` 事件填值，再回读校验
 - 计时器解析：兼容 `167 小时 46 分钟 9 秒`、`167:46:09`、`167 hours 46 minutes 9 seconds`
@@ -59,10 +79,14 @@ Fork 到你自己的 GitHub 账号。
 # 安装依赖
 npm init -y && npm install puppeteer-real-browser@1.4.4 puppeteer-core@25.7.0
 
-# 设置环境变量后运行（需本机 Chrome）
+# 单账号
 set FALIX_EMAIL=you@example.com
 set FALIX_PASSWORD=xxx
 set FALIX_SERVER_ID=YOUR_SERVER_ID
+
+# 或多账号（JSON 一行）
+set FALIX_ACCOUNTS=[{"email":"a@example.com","password":"pass1","serverId":"srv1"},{"email":"b@example.com","password":"pass2","serverId":"srv2"}]
+
 node run.mjs
 ```
 
@@ -71,7 +95,8 @@ node run.mjs
 ## 常见问题
 
 - **登录失败**：检查日志是否出现 `React ready` 与 `email/password OK (js)`；若为 `login failed: ...`，检查 Secrets、Turnstile 是否超时、WARP 是否生效
-- **账号启用 2FA**：脚本会输出 `login requires 2FA` 并退出，需要关闭 2FA 或改用 cookie 方案
+- **账号启用 2FA**：脚本会输出 `login requires 2FA`，该账号记为失败并继续其他账号；需要关闭 2FA 或改用 cookie 方案
+- **多账号里某个账号失败**：日志/TG 显示 `[i/N] label 失败: ...`，其他账号继续；最后 job 为红，按提示单独修该账号
 - **no extend button**：计时器可能已满或页面未加载，查看截图 `timer_01_loaded.png`
 - **计时器时间未增加**：168h 封顶时属正常；日志会打印 `timer near cap`，此时 `timer/extend` 仍然返回成功
 - **登录后 cookie 很快失效**：站点会话较短，脚本每次会重新登录；`cookies.json` 仅作加速
