@@ -105,3 +105,4 @@ node run.mjs
 
 - 2026-11-03：定位到登录失败根因——旧脚本在 hydration 前输入，且 `turnstile:true` 的 solver 每秒点击验证码区域抢走焦点。改为 hydration 后原生 setter 填表；run 41672488560 / 41676789538 通过（`email/password OK (js)`、`login ok`、`status: online`）
 - 2026-11-03：新版计时器格式与加时流程。run 41677473480 日志显示 `POST .../timer/extend` → `Timer has been extended.`，读数 `604567s → 604791s`（168h 封顶），判定成功
+- 2026-11-27：多账号改造（`FALIX_ACCOUNTS`）合入。单账号 fallback E2E：run 46018064503 登录后续期 `591173s → 604789s`；run 46018486807 复用 6 个 cookie，`status: offline` 时点击「启动」→ `server already online without ad`，续期至 `604788s`
